@@ -1,580 +1,265 @@
 // ==UserScript==
-// @name         Linuxdo活跃
+// @name         Linux.do 考古掘金
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
-// @description  Linuxdo小助手（可控制开关）
-// @author       Cressida
+// @version      3.0
+// @description  专治1000楼长贴读不完。逻辑锁死：除非看到底部“建议话题”区域，否则绝不退出！
+// @author       Gemini_User
 // @match        https://linux.do/*
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @run-at       document-idle
-// @downloadURL https://update.greasyfork.org/scripts/556858/Linuxdo%E6%B4%BB%E8%B7%83.user.js
-// @updateURL https://update.greasyfork.org/scripts/556858/Linuxdo%E6%B4%BB%E8%B7%83.meta.js
+// @match        https://www.linux.do/*
+// @grant        GM_addStyle
+// @license      MIT
 // ==/UserScript==
 
-(function () {
+(function() {
     'use strict';
 
-    // ==================== 常量定义 ====================
-    
-    /** 默认配置参数 */
-    const DEFAULT_CONFIG = {
-        scrollInterval: 300,      // 滚动间隔(毫秒)
-        scrollStep: 880,          // 每次滚动的像素
-        waitForElement: 2000,    // 找不到评论的最大等待时间(毫秒)
-        waitingTime: 1000        // 看完评论等待时间(毫秒)
+    // --- ⚙️ 参数配置 ---
+    const CONFIG = {
+        homeUrl: "https://linux.do/latest",  // 🎯 锁定 Latest
+        scrollStep: 400,                     // 滚动步长 (稍微迈大步)
+        scrollInterval: 800,                 // 滚动间隔 (0.8秒)
+        bottomStay: 2000,                    // ⏱️ 到底后停留 2秒
+        maxWaitTime: 120,                    // ⚠️ 单个帖子最长死磕 120秒 (防止断网卡死)
+        maxSearchScroll: 80,                 // 列表页下钻次数
+        storageKey: 'linuxdo_history_v3',    // 历史库升级V3
+        statusKey: 'linuxdo_running_v3'
     };
 
-    /** 速度滑块配置 */
-    const SPEED_SLIDER_CONFIG = {
-        min: 0.1,
-        max: 5.0,
-        step: 0.1,
-        default: 1.0
+    // --- 📊 状态记录 ---
+    let state = {
+        isRunning: localStorage.getItem(CONFIG.statusKey) === '1',
+        searchAttempts: 0,
+        visited: new Set()
     };
 
-    /** 元素选择器配置 */
-    const SELECTORS = {
-        chatButton: 'li.chat-header-icon',
-        chatLink: 'a[href="/chat"]',
-        headerButtons: '.header-buttons',
-        headerIcons: '.d-header-icons',
-        headerDropdown: 'ul.header-dropdown-toggle',
-        header: 'header.d-header',
-        commentList: 'html.desktop-view.not-mobile-device.text-size-normal.no-touch.discourse-no-touch',
-        rawLinks: '.raw-link'
+    // --- 🖥️ UI 控制面板 ---
+    const UI = {
+        init: function() {
+            const div = document.createElement('div');
+            div.style.cssText = `
+                position: fixed; bottom: 20px; right: 20px; z-index: 10000;
+                background: #000; color: #fff; padding: 15px; border-radius: 8px;
+                font-family: sans-serif; font-size: 12px; box-shadow: 0 4px 15px rgba(255,255,255,0.2);
+                border: 1px solid #333; min-width: 160px; text-align: center;
+            `;
+            
+            const btnColor = state.isRunning ? "#e74c3c" : "#f1c40f";
+            const btnText = state.isRunning ? "停止死磕" : "开始死磕";
+            const statusText = state.isRunning ? "🔨 死磕中..." : "🐧 已就绪";
+
+            div.innerHTML = `
+                <div style="font-weight:bold; color:#f1c40f; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                    <span>🐧 Linux.do V3.0</span>
+                    <span id="ld-clear" style="cursor:pointer; font-size:14px;" title="清除历史">🗑️</span>
+                </div>
+                <div id="ld-msg" style="margin-bottom:8px; color:#bdc3c7;">${statusText}</div>
+                <div id="ld-debug" style="margin-bottom:10px; color:#666; font-size:10px;">等待指令...</div>
+                <button id="ld-btn" style="width:100%; padding:8px; cursor:pointer; background:${btnColor}; border:none; color:#000; border-radius:4px; font-weight:bold;">${btnText}</button>
+                <div style="margin-top:5px; font-size:10px; color:#444;">去重库: <span id="ld-v-count">0</span></div>
+            `;
+            document.body.appendChild(div);
+
+            const btn = document.getElementById('ld-btn');
+            const clearBtn = document.getElementById('ld-clear');
+            
+            setInterval(() => {
+                const el = document.getElementById('ld-v-count');
+                if(el) el.innerText = state.visited.size;
+            }, 2000);
+
+            clearBtn.onclick = () => {
+                if(confirm('清除所有已读记录？')) {
+                    state.visited.clear();
+                    localStorage.removeItem(CONFIG.storageKey);
+                    UI.log("🗑️ 记录已清空");
+                }
+            };
+
+            btn.onclick = () => {
+                state.isRunning = !state.isRunning;
+                localStorage.setItem(CONFIG.statusKey, state.isRunning ? '1' : '0');
+                if(state.isRunning) {
+                    btn.innerText = "停止死磕";
+                    btn.style.background = "#e74c3c";
+                    btn.style.color = "#fff";
+                    UI.log("🚀 启动...");
+                    Core.start();
+                } else {
+                    btn.innerText = "开始死磕";
+                    btn.style.background = "#f1c40f";
+                    btn.style.color = "#000";
+                    UI.log("🛑 已停止");
+                    setTimeout(() => location.reload(), 500); 
+                }
+            };
+        },
+        log: function(msg) {
+            const el = document.getElementById('ld-msg');
+            if(el) el.innerText = msg;
+        },
+        debug: function(msg) {
+            const el = document.getElementById('ld-debug');
+            if(el) el.innerText = msg;
+        }
     };
 
-    /** 存储键名 */
-    const STORAGE_KEYS = {
-        enabled: 'linuxdoHelperEnabled',
-        baseConfig: 'linuxdoHelperBaseConfig',
-        speedRatio: 'linuxdoHelperSpeedRatio',
-        visitedLinks: 'visitedLinks'
+    // --- 💾 存储管理 ---
+    const Storage = {
+        load: function() {
+            try {
+                const raw = localStorage.getItem(CONFIG.storageKey);
+                if(raw) {
+                    const data = JSON.parse(raw);
+                    const now = Date.now();
+                    Object.keys(data).forEach(u => {
+                        if(now - data[u] < 259200000) state.visited.add(u);
+                    });
+                }
+            } catch(e){}
+        },
+        save: function(url) {
+            state.visited.add(url);
+            const data = {};
+            if(state.visited.size > 3000) state.visited.clear();
+            state.visited.forEach(u => data[u] = Date.now());
+            localStorage.setItem(CONFIG.storageKey, JSON.stringify(data));
+        }
     };
 
-    /** 页面URL */
-    const URLS = {
-        newPosts: 'https://linux.do/new'
-    };
-
-    /** 元素等待超时时间（毫秒） */
-    const ELEMENT_WAIT_TIMEOUT = 2000;
-
-    // ==================== 配置管理 ====================
-
-    /** 基础配置（用于速度比例计算） */
-    let baseConfig = null;
-
-    /**
-     * 获取基础配置（从存储中读取，如果没有则使用默认值）
-     * @returns {Object} 基础配置对象
-     */
-    function getBaseConfig() {
-        const savedConfig = GM_getValue(STORAGE_KEYS.baseConfig, null);
-        return savedConfig ? savedConfig : { ...DEFAULT_CONFIG };
-    }
-
-    /**
-     * 保存基础配置
-     * @param {Object} newConfig - 新的基础配置
-     */
-    function saveBaseConfig(newConfig) {
-        GM_setValue(STORAGE_KEYS.baseConfig, newConfig);
-        baseConfig = newConfig;
-    }
-
-    /**
-     * 获取速度比例
-     * @returns {number} 速度比例（0.1 - 5.0）
-     */
-    function getSpeedRatio() {
-        return GM_getValue(STORAGE_KEYS.speedRatio, SPEED_SLIDER_CONFIG.default);
-    }
-
-    /**
-     * 保存速度比例
-     * @param {number} ratio - 速度比例
-     */
-    function saveSpeedRatio(ratio) {
-        GM_setValue(STORAGE_KEYS.speedRatio, ratio);
-    }
-
-    /**
-     * 获取实际使用的配置（基础配置 × 速度比例）
-     * @returns {Object} 计算后的配置对象
-     */
-    function getConfig() {
-        if (!baseConfig) {
-            baseConfig = getBaseConfig();
-        }
-        const ratio = getSpeedRatio();
-        return {
-            scrollInterval: Math.round(baseConfig.scrollInterval / ratio),
-            scrollStep: Math.round(baseConfig.scrollStep * ratio),
-            waitForElement: Math.round(baseConfig.waitForElement / ratio),
-            waitingTime: Math.round(baseConfig.waitingTime / ratio)
-        };
-    }
-
-    // 初始化基础配置
-    baseConfig = getBaseConfig();
-
-    // ==================== 开关状态管理 ====================
-
-    /**
-     * 获取助手开关状态
-     * @returns {boolean} 是否启用
-     */
-    function getSwitchState() {
-        return GM_getValue(STORAGE_KEYS.enabled, false);
-    }
-
-    /**
-     * 切换助手开关状态
-     */
-    function toggleSwitch() {
-        const currentState = getSwitchState();
-        const newState = !currentState;
-        GM_setValue(STORAGE_KEYS.enabled, newState);
-
-        if (newState) {
-            // 启用时跳转到新帖子页面
-            window.location.href = URLS.newPosts;
-        }
-        console.log(`Linuxdo助手已${newState ? '启用' : '禁用'}`);
-    }
-
-    // ==================== UI 组件创建 ====================
-
-    /**
-     * 创建SVG图标元素
-     * @param {string} iconHref - 图标引用（如 '#play' 或 '#pause'）
-     * @returns {SVGElement} SVG元素
-     */
-    function createSVGIcon(iconHref) {
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('class', 'fa d-icon d-icon-rocket svg-icon prefix-icon svg-string');
-        svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    // --- 🚀 核心逻辑 ---
+    const Core = {
+        start: function() {
+            Storage.load();
+            this.router();
+        },
         
-        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-        use.setAttribute('href', iconHref);
-        svg.appendChild(use);
-        
-        return svg;
-    }
+        router: function() {
+            if(!state.isRunning) return;
 
-    /**
-     * 创建控制开关按钮
-     * @returns {HTMLElement} 开关按钮的 li 元素
-     */
-    function createSwitchButton() {
-        const iconLi = document.createElement('li');
-        iconLi.className = 'header-dropdown-toggle';
-        
-        const iconLink = document.createElement('a');
-        iconLink.href = '#';
-        iconLink.className = 'btn no-text icon btn-flat';
-        iconLink.tabIndex = 0;
-        
-        const isEnabled = getSwitchState();
-        iconLink.title = isEnabled ? '停止Linuxdo助手' : '启动Linuxdo助手';
-        
-        const svg = createSVGIcon(isEnabled ? '#pause' : '#play');
-        iconLink.appendChild(svg);
-        iconLi.appendChild(iconLink);
-
-        // 点击事件处理
-        iconLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            // 1. 帖子页
+            if(/\/t\/.*?\/\d+$/.test(window.location.pathname)) {
+                this.readPost();
+                return;
+            } 
             
-            toggleSwitch();
-            
-            // 更新按钮状态
-            const newState = getSwitchState();
-            const use = svg.querySelector('use');
-            use.setAttribute('href', newState ? '#pause' : '#play');
-            iconLink.title = newState ? '停止Linuxdo助手' : '启动Linuxdo助手';
-            iconLink.classList.toggle('active', newState);
-            
-            // 更新悬浮滑块显示状态
-            updateFloatingSliderVisibility();
-        });
-
-        return iconLi;
-    }
-
-    /**
-     * 查找聊天按钮元素
-     * @returns {Promise<HTMLElement|null>} 聊天按钮元素或null
-     */
-    async function findChatButton() {
-        try {
-            // 尝试等待聊天按钮出现
-            const chatButton = await Promise.race([
-                waitForElement(SELECTORS.chatButton),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('timeout')), ELEMENT_WAIT_TIMEOUT)
-                )
-            ]).catch(() => null);
-            
-            if (chatButton) {
-                return chatButton;
-            }
-        } catch (e) {
-            // 等待失败，继续尝试直接查找
-        }
-        
-        // 直接查找聊天按钮
-        return document.querySelector(SELECTORS.chatButton) || 
-               document.querySelector(SELECTORS.chatLink)?.closest('li');
-    }
-
-    /**
-     * 查找备用插入位置
-     * @returns {HTMLElement|null} 备用位置元素或null
-     */
-    function findFallbackInsertPosition() {
-        return document.querySelector(SELECTORS.headerButtons) || 
-               document.querySelector(SELECTORS.headerIcons) ||
-               document。querySelector(SELECTORS。headerDropdown)?.parentElement;
-    }
-
-    /**
-     * 将开关按钮插入到页面中
-     * @param {HTMLElement} buttonElement - 开关按钮元素
-     */
-    function insertSwitchButton(buttonElement) {
-        // 优先插入到聊天按钮旁边
-        const chatButton = document.querySelector(SELECTORS。chatButton);
-        if (chatButton?.parentNode) {
-            chatButton。parentNode。insertBefore(buttonElement， chatButton.nextSibling);
-            return;
-        }
-
-        // 备用方案：插入到其他header按钮位置
-        const fallbackPosition = findFallbackInsertPosition();
-        if (fallbackPosition?.parentNode) {
-            fallbackPosition.parentNode.insertBefore(buttonElement, fallbackPosition.nextSibling);
-            return;
-        }
-
-        // 最后方案：插入到header中
-        const header = document.querySelector(SELECTORS.header) || document.querySelector('header');
-        if (header) {
-            const headerList = header.querySelector('ul') || header.querySelector('nav');
-            if (headerList) {
-                headerList.appendChild(buttonElement);
-            } else {
-                header.insertBefore(buttonElement， header.firstChild);
-            }
-        } else {
-            console。log("【错误】未找到按钮插入位置！");
-        }
-    }
-
-    /**
-     * 创建并插入开关图标到页面
-     */
-    async function createSwitchIcon() {
-        const switchButton = createSwitchButton();
-        await findChatButton(); // 等待聊天按钮加载
-        insertSwitchButton(switchButton);
-    }
-
-    /**
-     * 创建悬浮速度滑块
-     * @returns {HTMLElement} 滑块容器元素
-     */
-    function createFloatingSpeedSlider() {
-        // 如果已存在，先移除
-        const existingSlider = document.getElementById('linuxdo-speed-slider');
-        if (existingSlider) {
-            existingSlider.remove();
-        }
-
-        // 创建容器
-        const container = document.createElement('div');
-        container.id = 'linuxdo-speed-slider';
-        container.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: white;
-            border-radius: 8px;
-            padding: 16px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            z-index: 9999;
-            min-width: 200px;
-            display: ${getSwitchState() ? 'block' : 'none'};
-        `;
-
-        // 创建标签
-        const label = document.createElement('div');
-        label.textContent = '阅读速度';
-        label.style.cssText = 'font-size: 14px; color: #333; font-weight: 500; margin-bottom: 10px;';
-        container.appendChild(label);
-
-        // 创建滑块容器
-        const sliderWrapper = document.createElement('div');
-        sliderWrapper.style.cssText = 'display: flex; align-items: center; gap: 12px;';
-
-        // 创建滑块
-        const slider = document.createElement('input');
-        slider.type = 'range';
-        slider.min = SPEED_SLIDER_CONFIG.min;
-        slider.max = SPEED_SLIDER_CONFIG.max;
-        slider.step = SPEED_SLIDER_CONFIG.step;
-        slider.value = getSpeedRatio();
-        slider.style.cssText = `
-            flex: 1;
-            height: 6px;
-            border-radius: 3px;
-            background: #ddd;
-            outline: none;
-            cursor: pointer;
-        `;
-
-        // 创建数值显示
-        const valueDisplay = document.createElement('span');
-        valueDisplay.textContent = getSpeedRatio().toFixed(1) + 'x';
-        valueDisplay.style.cssText = 'min-width: 45px; text-align: right; font-size: 14px; color: #666; font-weight: 500;';
-
-        // 滑块值变化事件
-        slider.addEventListener('input', () => {
-            const ratio = parseFloat(slider.value);
-            valueDisplay.textContent = ratio.toFixed(1) + 'x';
-            saveSpeedRatio(ratio);
-            
-            // 如果正在滚动，立即应用新速度
-            restartScrolling();
-        });
-
-        // 组装元素
-        sliderWrapper.appendChild(slider);
-        sliderWrapper.appendChild(valueDisplay);
-        container.appendChild(sliderWrapper);
-        document.body.appendChild(container);
-
-        return container;
-    }
-
-    /**
-     * 更新悬浮滑块的显示状态
-     */
-    function updateFloatingSliderVisibility() {
-        const slider = document.getElementById('linuxdo-speed-slider');
-        if (slider) {
-            slider.style.display = getSwitchState() ? 'block' : 'none';
-        }
-    }
-
-    // ==================== DOM 工具函数 ====================
-
-    /**
-     * 等待指定元素出现在页面中
-     * @param {string} selector - CSS选择器
-     * @returns {Promise<HTMLElement>} 找到的元素
-     */
-    function waitForElement(selector) {
-        return new Promise((resolve, reject) => {
-            // 先尝试直接查找
-            const element = document.querySelector(selector);
-            if (element) {
-                resolve(element);
+            // 2. 强制 Latest
+            if(!window.location.pathname.includes('/latest') && !window.location.pathname.includes('/top')) {
+                UI.log("🔄 前往Latest...");
+                window.location.href = CONFIG.homeUrl;
                 return;
             }
 
-            // 使用MutationObserver监听DOM变化
-            const observer = new MutationObserver(() => {
-                const element = document.querySelector(selector);
-                if (element) {
-                    observer.disconnect();
-                    resolve(element);
+            this.scanList();
+        },
+
+        // 🟢 扫描列表
+        scanList: async function() {
+            UI.log("🔍 扫描中...");
+            await new Promise(r => setTimeout(r, 2000)); 
+
+            const checkAndScroll = async () => {
+                if(!state.isRunning) return;
+                const links = Array.from(document.querySelectorAll('.topic-list-item .raw-topic-link'));
+                const unread = links.filter(l => !state.visited.has(l.href));
+                
+                UI.debug(`发现:${links.length} | 未读:${unread.length}`);
+
+                if(unread.length > 0) {
+                    state.searchAttempts = 0;
+                    const target = unread[0]; 
+                    UI.log(`进入: ${target.innerText.trim().substring(0,8)}...`);
+                    Storage.save(target.href);
+                    window.location.href = target.href; 
+                    return;
                 }
-            });
 
-            observer.observe(document.body, {
-                childList: true，
-                subtree: true
-            });
+                state.searchAttempts++;
+                if(state.searchAttempts > CONFIG.maxSearchScroll) {
+                    UI.log("⚠️ 无新帖，重置页面");
+                    setTimeout(() => location.reload(), 5000);
+                    return;
+                }
 
-            // 超时处理
-            setTimeout(() => {
-                observer.disconnect();
-                console.log("【错误】未找到元素：", selector);
-                reject(new Error('未找到：' + selector));
-            }， getConfig()。waitForElement);
-        });
-    }
+                UI.log(`下钻寻找中... (${state.searchAttempts})`);
+                window.scrollTo(0, document.body.scrollHeight);
+                setTimeout(checkAndScroll, 2000); 
+            };
+            checkAndScroll();
+        },
 
-    /**
-     * 获取页面中的原始链接列表
-     * @returns {Array<Object>} 链接对象数组，包含index、href、text
-     */
-    function getRawLinks() {
-        const linkElements = document.querySelectorAll(SELECTORS.rawLinks);
-        return Array.from(linkElements)
-            。map((element， index) => ({
-                index: index + 1,
-                href: element.href,
-                text: element。textContent.trim()
-            }))
-            。filter(link => link。href);
-    }
-
-    // ==================== 核心功能 ====================
-
-    /** 当前运行的滚动定时器引用 */
-    let currentScrollInterval = null;
-    
-    /** 当前评论元素引用 */
-    let currentCommentElement = null;
-
-    /**
-     * 加载并跳转到新页面
-     * @param {Array<Object>} links - 可用链接列表
-     */
-    function loadPage(links) {
-        if (!getSwitchState()) {
-            return;
-        }
-
-        const visitedLinks = JSON.parse(
-            localStorage.getItem(STORAGE_KEYS.visitedLinks) || '[]'
-        );
-        const unvisitedLinks = links.filter(
-            link => !visitedLinks.includes(link.href)
-        );
-
-        // 如果没有未访问的链接，跳转到新帖子页面
-        if (unvisitedLinks.length === 0) {
-            window.location.href = URLS.newPosts;
-            console.log("去看最新帖子");
-            return;
-        }
-
-        // 随机选择一个未访问的链接
-        const randomIndex = Math.floor(Math.random() * unvisitedLinks.length);
-        const selectedLink = unvisitedLinks[randomIndex];
-        
-        // 记录已访问
-        visitedLinks.push(selectedLink.href);
-        localStorage.setItem(STORAGE_KEYS.visitedLinks, JSON.stringify(visitedLinks));
-        
-        // 跳转
-        window.location.href = selectedLink.href;
-    }
-
-    /**
-     * 停止当前滚动
-     */
-    function stopScrolling() {
-        if (currentScrollInterval) {
-            clearInterval(currentScrollInterval);
-            currentScrollInterval = null;
-        }
-        currentCommentElement = null;
-    }
-
-    /**
-     * 滚动评论区域并自动跳转
-     * @param {HTMLElement} commentElement - 评论容器元素
-     */
-    function scrollComment(commentElement) {
-        // 停止之前的滚动
-        stopScrolling();
-        
-        // 保存当前评论元素引用
-        currentCommentElement = commentElement;
-        
-        // 记录开始等待链接的时间
-        let linkWaitStartTime = null;
-        
-        // 获取最新配置
-        const config = getConfig();
-        
-        const scrollInterval = setInterval(() => {
-            // 每次滚动时重新获取配置，确保速度改变立即生效
-            const currentConfig = getConfig();
+        // 🔵 阅读帖子 (V3.0 终极死磕逻辑)
+        readPost: function() {
+            UI.log("📖 正在爬楼...");
             
-            // 滚动
-            commentElement.scrollTop += currentConfig.scrollStep;
-            commentElement.dispatchEvent(new Event('scroll'));
+            let startTime = Date.now();
+            let lastScrollTime = Date.now();
+            let lastHeight = document.documentElement.scrollHeight;
 
-            // 检查是否有链接
-            const links = getRawLinks();
-            if (links.length > 0) {
-                // 记录开始等待的时间
-                if (linkWaitStartTime === null) {
-                    linkWaitStartTime = Date.now();
-                }
+            const timer = setInterval(() => {
+                if(!state.isRunning) { clearInterval(timer); return; }
+
+                // 1. 正常滚动
+                window.scrollBy(0, CONFIG.scrollStep);
+
+                // 2. 获取关键指标
+                const currentHeight = document.documentElement.scrollHeight;
+                const scrollPos = window.scrollY + window.innerHeight;
                 
-                // 计算已等待时间（毫秒）
-                const waitedTime = Date.now() - linkWaitStartTime;
+                // --- 🛡️ 核心判定条件 🛡️ ---
                 
-                if (waitedTime >= currentConfig.waitingTime) {
-                    stopScrolling();
-                    loadPage(links);
+                // 条件A: 明确看到了底部的“建议话题” (这是唯一的真理)
+                const footer = document.querySelector('#suggested-topics') || document.querySelector('#topic-footer-buttons');
+                const isRealFooterVisible = footer && (footer.getBoundingClientRect().top <= window.innerHeight + 50);
+
+                // 条件B: 进度条检测 (辅助判定)
+                // Linux.do 右侧通常有进度条，如 "153 / 1000"
+                // 暂时不作为主要退出依据，因为有时候不准，以 Footer 为准
+
+                // 3. 状态反馈
+                if(currentHeight > lastHeight) {
+                    lastHeight = currentHeight;
+                    lastScrollTime = Date.now(); // 重置卡顿计时
+                    UI.log("📦 加载新楼层...");
+                } else if (!isRealFooterVisible) {
+                    // 如果高度没变，且没看到底
+                    let waitTime = Math.floor((Date.now() - lastScrollTime) / 1000);
+                    UI.debug(`等待加载... ${waitTime}s`);
                 }
-            } else {
-                // 没有链接时重置等待时间
-                linkWaitStartTime = null;
-            }
-        }, config.scrollInterval);
-        
-        // 保存 interval 引用
-        currentScrollInterval = scrollInterval;
-    }
-    
-    /**
-     * 重新启动滚动（用于速度改变时立即生效）
-     */
-    function restartScrolling() {
-        if (currentCommentElement) {
-            scrollComment(currentCommentElement);
+
+                // 4. 退出逻辑
+                // 只有当 (看到了底部的Footer) 或者 (卡住超过了最大等待时间) 时才退出
+                // 即使滚不动了(scrollPos >= currentHeight)，只要没看到Footer，就死等它加载
+                
+                if (isRealFooterVisible) {
+                    clearInterval(timer);
+                    UI.log(`✅ 到底！停留${CONFIG.bottomStay/1000}s`);
+                    setTimeout(() => { window.location.href = CONFIG.homeUrl; }, CONFIG.bottomStay);
+                } 
+                else if ((Date.now() - lastScrollTime) > (CONFIG.maxWaitTime * 1000)) {
+                    // 保险丝：卡了120秒还在原地，强制退出
+                    clearInterval(timer);
+                    UI.log("⚠️ 响应超时，强制返回");
+                    setTimeout(() => { window.location.href = CONFIG.homeUrl; }, 1000);
+                }
+
+            }, CONFIG.scrollInterval);
         }
-    }
+    };
 
-    /**
-     * 启动自动滚动功能
-     */
-    async function startAutoScroll() {
-        try {
-            const commentElement = await waitForElement(SELECTORS。commentList);
-            console。log('找到评论列表元素:', commentElement);
-            scrollComment(commentElement);
-        } catch (error) {
-            console.error('启动自动滚动失败:', error);
+    // --- 初始化 ---
+    window.addEventListener('load', () => {
+        UI.init();
+        if(state.isRunning) {
+            setTimeout(() => Core.start(), 1500);
         }
-    }
+    });
 
-    // ==================== 主程序入口 ====================
-
-    /**
-     * 主初始化函数
-     */
-    async function main() {
-        // 创建控制开关按钮
-        await createSwitchIcon();
-        
-        // 创建悬浮速度滑块
-        createFloatingSpeedSlider();
-        
-        // 如果助手未启用，不执行后续操作
-        if (!getSwitchState()) {
-            return;
+    let lastUrl = window.location.href;
+    setInterval(() => {
+        if(state.isRunning && window.location.href !== lastUrl) {
+            lastUrl = window.location.href;
+            setTimeout(() => Core.router(), 2000);
         }
+    }, 1000);
 
-        // 启动自动滚动
-        startAutoScroll();
-    }
-
-    // 页面加载完成后执行
-    if (document.readyState === 'complete') {
-        main();
-    } else {
-        window.addEventListener('load', main);
-    }
 })();

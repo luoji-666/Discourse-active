@@ -1,224 +1,261 @@
 // ==UserScript==
-// @name         NodeLoc 自动浏览（流畅增强版）
+// @name         NodeLoc 考古掘金
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  NodeLoc自动浏览帖子（平滑滚动、随机延迟、防卡死）
-// @author       你的用户名
+// @version      2.1
+// @description  NodeLoc专用 (Discourse架构)。锁定 /latest 频道启动，底部停留2秒后返回，严格去重，无限下钻。
+// @author       Gemini_User
 // @match        https://www.nodeloc.com/*
-// @grant        none
-// @run-at       document-idle
+// @match        https://nodeloc.com/*
+// @grant        GM_addStyle
 // @license      MIT
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // ========== 配置区域 ==========
-    const config = {
-        maxPosts: 20,           // 每天/每次运行最大浏览帖子数
-        scrollSpeed: 'fast',    // 滚动速度：'slow'(慢读), 'normal'(正常), 'fast'(刷分)
-        minStayTime: 3000,      // 单个帖子最短停留时间（毫秒）
-        maxStayTime: 6000,      // 单个帖子最长停留时间（毫秒）
-        nextPageDelay: 1500,    // 翻页/返回后的等待时间
-        storageKey: 'nodeloc_visited_posts'
+    // --- ⚙️ 参数配置 ---
+    const CONFIG = {
+        homeUrl: "https://www.nodeloc.com/latest", // 🎯 强制目标为 Latest 页面
+        scrollStep: 300,                     // 滚动步长
+        scrollInterval: 1000,                // 滚动间隔 (1秒)
+        bottomStay: 2000,                    // ⏱️ 停留时间改为 2秒
+        stuckLimit: 10,                      // 到底检测灵敏度
+        maxSearchScroll: 60,                 // 列表页最大下钻次数
+        storageKey: 'nodeloc_history_v2',    // 历史记录key
+        statusKey: 'nodeloc_running_v2'      // 运行状态key
     };
-    // ============================
 
-    let currentPosts = 0;
-    const visitedPosts = new Set();
-    let isRunning = true;
+    // --- 📊 状态记录 ---
+    let state = {
+        isRunning: localStorage.getItem(CONFIG.statusKey) === '1',
+        searchAttempts: 0,
+        visited: new Set()
+    };
 
-    // 获取随机停留时间
-    const getRandomStayTime = () => Math.floor(Math.random() * (config.maxStayTime - config.minStayTime + 1)) + config.minStayTime;
+    // --- 🖥️ UI 控制面板 ---
+    const UI = {
+        init: function() {
+            const div = document.createElement('div');
+            div.style.cssText = `
+                position: fixed; bottom: 20px; right: 20px; z-index: 10000;
+                background: #2f3542; color: #fff; padding: 15px; border-radius: 8px;
+                font-family: sans-serif; font-size: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+                border: 1px solid #57606f; min-width: 160px; text-align: center;
+            `;
 
-    // 初始化去重（保留24小时内的记录）
-    function initVisited() {
-        try {
-            const stored = localStorage.getItem(config.storageKey);
-            if (stored) {
-                const parsed = JSON.parse(stored);
-                const now = Date.now();
-                const newRecord = {};
-                // 清理过期数据，只保留24小时内的
-                Object.keys(parsed).forEach(url => {
-                    if (now - parsed[url] < 24 * 3600 * 1000) {
-                        visitedPosts.add(url);
-                        newRecord[url] = parsed[url];
-                    }
-                });
-                localStorage.setItem(config.storageKey, JSON.stringify(newRecord));
-            }
-        } catch (e) { console.error('存储读取失败', e); }
-    }
+            const btnColor = state.isRunning ? "#ff4757" : "#2ed573";
+            const btnText = state.isRunning ? "停止考古" : "开始极速";
+            const statusText = state.isRunning ? "⚡ 极速运行" : "🍵 已就绪";
 
-    function saveVisited(url) {
-        try {
-            const stored = JSON.parse(localStorage.getItem(config.storageKey) || '{}');
-            stored[url] = Date.now();
-            localStorage.setItem(config.storageKey, JSON.stringify(stored));
-            visitedPosts.add(url);
-        } catch (e) {}
-    }
+            div.innerHTML = `
+                <div style="font-weight:bold; color:#ffa502; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                    <span>⚡ NodeLoc 极速版</span>
+                    <span id="nl-clear" style="cursor:pointer; font-size:14px;" title="清除历史记录">🗑️</span>
+                </div>
+                <div id="nl-msg" style="margin-bottom:5px; color:#dfe4ea;">${statusText}</div>
+                <div id="nl-debug" style="margin-bottom:10px; color:#a4b0be; font-size:10px;">等待启动...</div>
+                <button id="nl-btn" style="width:100%; padding:8px; cursor:pointer; background:${btnColor}; border:none; color:#fff; border-radius:4px; font-weight:bold;">${btnText}</button>
+                <div style="margin-top:5px; font-size:10px; color:#747d8c;">去重库: <span id="nl-v-count">0</span></div>
+            `;
+            document.body.appendChild(div);
 
-    function getPostLinks() {
-        const selectors = [
-            'a.title.raw-link.raw-topic-link', // 列表页标题
-            '.topic-list-item a.title',
-            'a[data-topic-id].title-link'
-        ];
-        for (const sel of selectors) {
-            const links = Array.from(document.querySelectorAll(sel))
-                .filter(link => link.href && link.href.includes('/t/') && !link.href.includes('#')); // 排除锚点
-            if (links.length > 0) return links;
-        }
-        return [];
-    }
+            const btn = document.getElementById('nl-btn');
+            const clearBtn = document.getElementById('nl-clear');
 
-    // ========== 核心优化：平滑智能滚动 ==========
-    function smoothScrollToBottom() {
-        return new Promise(resolve => {
-            console.log('[NodeLoc脚本] 开始平滑滚动...');
-            
-            // 根据配置决定滚动间隔
-            const scrollIntervalTime = config.scrollSpeed === 'fast' ? 500 : (config.scrollSpeed === 'slow' ? 2000 : 1000);
-            // 每次滚动的距离（屏幕高度的百分比）
-            const scrollStepRatio = config.scrollSpeed === 'fast' ? 0.8 : 0.5;
+            // 实时更新显示
+            setInterval(() => {
+                const el = document.getElementById('nl-v-count');
+                if(el) el.innerText = state.visited.size;
+            }, 2000);
 
-            let totalStayTime = 0;
-            const maxTimeProtection = 15000; // 强制保护：单个帖子最多呆15秒，防止无限长贴卡死
-
-            const scrollTimer = setInterval(() => {
-                if (!isRunning) {
-                    clearInterval(scrollTimer);
-                    return resolve();
+            // 清除缓存功能
+            clearBtn.onclick = () => {
+                if(confirm('要清除已读记录重新刷吗？')) {
+                    state.visited.clear();
+                    localStorage.removeItem(CONFIG.storageKey);
+                    UI.log("🗑️ 记录已清空");
+                    UI.debug("请重新点击开始");
                 }
+            };
 
-                const currentScroll = window.scrollY + window.innerHeight;
-                const totalHeight = document.documentElement.scrollHeight;
+            btn.onclick = () => {
+                state.isRunning = !state.isRunning;
+                localStorage.setItem(CONFIG.statusKey, state.isRunning ? '1' : '0');
 
-                // 检查是否到底 (预留100px误差)
-                if (currentScroll >= totalHeight - 100 || totalStayTime >= maxTimeProtection) {
-                    clearInterval(scrollTimer);
-                    console.log(`[NodeLoc脚本] 滚动结束 (耗时: ${totalStayTime}ms)`);
-                    
-                    // 到底后随机停留一下，模拟阅读结尾
-                    setTimeout(resolve, 1000); 
+                if(state.isRunning) {
+                    btn.innerText = "停止考古";
+                    btn.style.background = "#ff4757";
+                    UI.log("🚀 引擎启动...");
+                    Core.start();
                 } else {
-                    // 执行平滑滚动
-                    window.scrollBy({
-                        top: window.innerHeight * scrollStepRatio, 
-                        behavior: 'smooth' 
-                    });
-                    totalStayTime += scrollIntervalTime;
+                    btn.innerText = "开始极速";
+                    btn.style.background = "#2ed573";
+                    UI.log("🛑 已停止");
+                    setTimeout(() => location.reload(), 500);
                 }
-            }, scrollIntervalTime);
-        });
-    }
-
-    // ========== 帖子处理逻辑 ==========
-    async function processPost() {
-        if (!isRunning || currentPosts >= config.maxPosts) {
-            console.log(`[NodeLoc脚本] 任务完成或停止。本次共浏览: ${currentPosts}`);
-            return;
+            };
+        },
+        log: function(msg) {
+            const el = document.getElementById('nl-msg');
+            if(el) el.innerText = msg;
+        },
+        debug: function(msg) {
+            const el = document.getElementById('nl-debug');
+            if(el) el.innerText = msg;
         }
+    };
 
-        // --- 场景：帖子详情页 ---
-        if (window.location.pathname.includes('/t/')) {
-            // 1. 先停留随机时间（模拟读标题和主楼）
-            const readTime = getRandomStayTime();
-            console.log(`[NodeLoc脚本] 正在阅读主楼，停留 ${readTime}ms`);
-            await new Promise(r => setTimeout(r, readTime / 2));
+    // --- 💾 存储管理 (3天去重) ---
+    const Storage = {
+        load: function() {
+            try {
+                const raw = localStorage.getItem(CONFIG.storageKey);
+                if(raw) {
+                    const data = JSON.parse(raw);
+                    const now = Date.now();
+                    Object.keys(data).forEach(u => {
+                        if(now - data[u] < 259200000) state.visited.add(u);
+                    });
+                }
+            } catch(e){}
+        },
+        save: function(url) {
+            state.visited.add(url);
+            const data = {};
+            if(state.visited.size > 2500) state.visited.clear();
+            state.visited.forEach(u => data[u] = Date.now());
+            localStorage.setItem(CONFIG.storageKey, JSON.stringify(data));
+        }
+    };
 
-            // 2. 平滑滚动到底部
-            await smoothScrollToBottom();
+    // --- 🚀 核心逻辑 ---
+    const Core = {
+        start: function() {
+            Storage.load();
+            this.router();
+        },
 
-            // 3. 准备返回
-            console.log('[NodeLoc脚本] 阅览完毕，返回列表');
-            // 优先使用 JS 返回，如果 history.length 太短则回首页
-            if (window.history.length > 1) {
-                window.history.back();
-            } else {
-                window.location.href = 'https://www.nodeloc.com/';
+        router: function() {
+            if(!state.isRunning) return;
+
+            // 1. 如果在帖子页 (/t/xxx/123) -> 阅读
+            if(/\/t\/.*?\/\d+$/.test(window.location.pathname)) {
+                this.readPost();
+                return;
             }
-            // 等待页面跳转的缓冲
-            setTimeout(processPost, config.nextPageDelay); 
-            return;
-        }
 
-        // --- 场景：帖子列表页 ---
-        const postLinks = getPostLinks();
-        if (postLinks.length === 0) {
-            console.log('[NodeLoc脚本] 未找到帖子链接，重试中...');
-            setTimeout(processPost, 2000);
-            return;
-        }
-
-        // 过滤已访问
-        const unvisited = postLinks.filter(link => !visitedPosts.has(link.href));
-        
-        // 如果当前页全看过了，翻页
-        if (unvisited.length === 0) {
-            console.log('[NodeLoc脚本] 当前页已阅完，尝试翻页...');
-            const nextBtn = document.querySelector('a.next.page-link') || document.querySelector('.next a');
-            if (nextBtn) {
-                nextBtn.click();
-                setTimeout(processPost, config.nextPageDelay + 1000); // 翻页多等一会
-            } else {
-                console.log('[NodeLoc脚本] 无下一页，停止运行');
-                isRunning = false;
+            // 2. 🚨 强制检查：必须在 /latest 页面
+            // 如果 URL 不包含 /latest 且不是 Top 页，强制跳转
+            if(!window.location.pathname.includes('/latest') && !window.location.pathname.includes('/top')) {
+                UI.log("🔄 前往Latest...");
+                window.location.href = CONFIG.homeUrl;
+                return;
             }
-            return;
+
+            // 3. 扫描列表
+            this.scanList();
+        },
+
+        // 🟢 扫描列表 (无限下钻)
+        scanList: async function() {
+            UI.log("🔍 扫描中...");
+            await new Promise(r => setTimeout(r, 1500));
+
+            const checkAndScroll = async () => {
+                if(!state.isRunning) return;
+
+                // Discourse 选择器
+                const links = Array.from(document.querySelectorAll('.topic-list-item .raw-topic-link'));
+
+                // 过滤已读
+                const unread = links.filter(l => !state.visited.has(l.href));
+
+                // 🐞 Debug信息
+                UI.debug(`发现:${links.length} | 未读:${unread.length} | 下钻:${state.searchAttempts}`);
+
+                // A. 找到未读
+                if(unread.length > 0) {
+                    state.searchAttempts = 0;
+                    const target = unread[0];
+
+                    UI.log(`进入: ${target.innerText.trim().substring(0,8)}...`);
+                    Storage.save(target.href);
+
+                    // 强制跳转
+                    window.location.href = target.href;
+                    return;
+                }
+
+                // B. 全是看过的，往下翻
+                state.searchAttempts++;
+                if(state.searchAttempts > CONFIG.maxSearchScroll) {
+                    UI.log("⚠️ 翻页太多，重置...");
+                    setTimeout(() => location.reload(), 5000);
+                    return;
+                }
+
+                UI.log(`全已读，第 ${state.searchAttempts} 次下钻...`);
+                window.scrollTo(0, document.body.scrollHeight);
+                setTimeout(checkAndScroll, 2000);
+            };
+
+            checkAndScroll();
+        },
+
+        // 🔵 阅读帖子
+        readPost: function() {
+            UI.log("📖 阅读计时...");
+            let lastHeight = 0;
+            let stuckCount = 0;
+
+            const timer = setInterval(() => {
+                if(!state.isRunning) { clearInterval(timer); return; }
+
+                window.scrollBy(0, CONFIG.scrollStep);
+
+                const currentHeight = document.documentElement.scrollHeight;
+                const scrollPos = window.scrollY + window.innerHeight;
+
+                // Discourse 到底标志
+                const footer = document.querySelector('#suggested-topics') || document.querySelector('.topic-map') || document.querySelector('#topic-footer-buttons');
+                const isFooterVisible = footer && (footer.getBoundingClientRect().top < window.innerHeight);
+
+                if (currentHeight === lastHeight) {
+                    stuckCount++;
+                } else {
+                    stuckCount = 0;
+                    lastHeight = currentHeight;
+                }
+
+                // 结束条件
+                if (isFooterVisible || (stuckCount >= CONFIG.stuckLimit && scrollPos > currentHeight - 200)) {
+                    clearInterval(timer);
+                    UI.log("✅ 完成，返回...");
+
+                    setTimeout(() => {
+                        window.location.href = CONFIG.homeUrl;
+                    }, CONFIG.bottomStay); // ⏳ 这里已经是 2000ms (2秒)
+                }
+
+            }, CONFIG.scrollInterval);
         }
+    };
 
-        // 随机选择一个未访问的帖子
-        const randomPost = unvisited[Math.floor(Math.random() * unvisited.length)];
-        saveVisited(randomPost.href);
-        currentPosts++;
-        
-        console.log(`[NodeLoc脚本] ---> 进入第 ${currentPosts} 个帖子: ${randomPost.innerText.trim().substring(0, 20)}...`);
-        
-        // 模拟点击（比 href 跳转更像真人）
-        randomPost.click();
-        
-        // 如果点击没反应（SPA），兜底跳转
-        setTimeout(() => {
-            if (!window.location.pathname.includes('/t/')) {
-                window.location.href = randomPost.href;
-            }
-        }, 1000);
-    }
-
-    // 监听页面 URL 变化 (针对 SPA 单页应用优化)
-    let lastUrl = window.location.href;
-    setInterval(() => {
-        if (window.location.href !== lastUrl) {
-            lastUrl = window.location.href;
-            if (isRunning) {
-                console.log('[NodeLoc脚本] 页面URL变动，重新校准逻辑...');
-                setTimeout(processPost, 1000);
-            }
-        }
-    }, 1000);
-
-    // 启动
-    function init() {
-        initVisited();
-        console.log(`[NodeLoc脚本] 启动成功。目标: ${config.maxPosts}帖, 模式: ${config.scrollSpeed}`);
-        setTimeout(processPost, 1500);
-    }
-
-    if (document.readyState === 'complete') {
-        init();
-    } else {
-        window.addEventListener('load', init);
-    }
-
-    // 快捷键控制
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            isRunning = false;
-            alert('[NodeLoc脚本] 已手动停止');
+    // --- 初始化 ---
+    window.addEventListener('load', () => {
+        UI.init();
+        if(state.isRunning) {
+            setTimeout(() => Core.start(), 1500);
         }
     });
+
+    // 路由监听
+    let lastUrl = window.location.href;
+    setInterval(() => {
+        if(state.isRunning && window.location.href !== lastUrl) {
+            lastUrl = window.location.href;
+            setTimeout(() => Core.router(), 2000);
+        }
+    }, 1000);
 
 })();

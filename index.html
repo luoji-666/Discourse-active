@@ -1,1 +1,52 @@
-<h1>Hello</h1>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jigsaw Pro - 探索世界</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="gallery-view">
+        <header>
+            <h1>Jigsaw Pro</h1>
+            <p>60% 兴趣定制 · 40% 探索未知</p>
+        </header>
+
+        <div class="gallery" id="gallery">
+            </div>
+        
+        <div id="sentinel">
+            <div class="loader"></div>
+            <span>探索更多...</span>
+        </div>
+    </div>
+
+    <div id="modal">
+        <div class="modal-content">
+            <h2>选择难度</h2>
+            <div class="level-grid">
+                <button class="level-btn" onclick="startGame('easy')">🟢 初级 (6~12片)</button>
+                <button class="level-btn" onclick="startGame('medium')" style="border: 2px solid #4a90e2; background: #f0f7ff;">🟡 中级 (12~20片)</button>
+                <button class="level-btn" onclick="startGame('advanced')">🔵 进阶 (20~28片)</button>
+            </div>
+            <button class="cancel-btn" onclick="closeModal()">取消</button>
+        </div>
+    </div>
+
+    <div id="game-area">
+        <div class="toolbar">
+            <button class="tool-btn" onclick="goHome()">🏠 返回</button>
+            <button class="tool-btn" onclick="scatterPieces()">🎲 打散</button>
+            <span id="progress-text">0%</span>
+        </div>
+        <div id="board-container">
+            <div id="play-board"></div>
+        </div>
+        <div id="win-msg">🎉 拼图完成！</div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

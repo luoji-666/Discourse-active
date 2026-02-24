@@ -1,0 +1,135 @@
+// ==UserScript==
+// @name         Telegram Web- 广告气泡毁灭者
+// @namespace    http://tampermonkey.net/
+// @version      3.0
+// @description  针对Bot广告特殊优化：找到关键词后，向上追溯并移除整个 .bubble 气泡容器。
+// @author       You
+// @match        https://web.telegram.org/k/*
+// @grant        none
+// @run-at       document-end
+// @license      MIT
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // ================= 关键词设置 =================
+    // 你可以在这里添加你想屏蔽的任何词
+    const keywords = [
+        "广告位",
+        "出售",
+        "点击我私聊",
+        "防失联",
+        "机场分享",
+        "USDT",
+        "兼职",
+        "印度药",
+        "本群承接",
+        "专业推广",
+        "点击我私聊",
+        "点击头像",
+        "防失联",
+        "防走丢",
+        "备用号",
+        "关注频道",
+        "跑分",    // 洗钱黑话
+        "承兑",       // 换汇黑话
+        "回U",        // 换币
+        "下发",       // 资金下发
+        "费率",       // 通常指洗钱费率
+        "点位",       // 同上
+        "四件套",     // 买卖银行卡/身份证
+        "实名号",     // 买卖账号
+        "查档",       // 违法人肉搜索
+        "定位",       // 非法定位服务
+        "开房记录",   // 隐私查询
+        "轰炸",       // 短信/电话轰炸
+        "数据源",     // 贩卖个人信息
+        "精准粉",     // 流量贩卖
+        "引流",       // 推广黑话
+        "兼职",
+        "日结",
+        "2元1000G",
+        "宝妈",       // 针对宝妈的刷单诈骗
+        "手工",       // 手工活诈骗
+        "不限地区",
+        "在家可做",
+        "无需押金",
+        "日赚",
+        "月入",
+        "上门",
+        "同城",
+        "包夜",
+        "喝茶",
+        "修车",       // 约炮黑话
+        "全套",
+        "莞式",
+        "裸聊",
+        "萝莉",       // 炼铜/色情引流高频词
+        "反差",
+        "私拍",
+        "包赢",
+        "内幕",
+        "特码",
+        "六合",
+        "彩票",
+        "倍投",
+        "流水",       // 博彩流水
+        "娱乐城",
+        "Sponsored Message",  // 官方硬广
+        "Proxy Sponsor"       // 代理赞助
+    ];
+    // ============================================
+
+    console.log('TG Web K 气泡毁灭者已就绪...');
+
+    function nukeAdBubbles() {
+        // 1. 策略改变：不找气泡，直接找所有包含文本的底层元素
+        // 这样可以确保即使文字被藏在很深的 span 里也能被揪出来
+        // 我们遍历所有的 div, span, p, text nodes 可能太慢，
+        // 所以我们还是先抓 .bubble，但用 textContent (无视 display:none) 来检查
+
+        const bubbles = document.querySelectorAll('.bubble');
+
+        bubbles.forEach(bubble => {
+            // 如果已经标记为处理过，跳过
+            if (bubble.getAttribute('data-ad-scanned') === 'true') return;
+
+            // 使用 textContent 而不是 innerText
+            // 区别：innerText 只有显示的文本，textContent 包含所有文本（即使被其他脚本隐藏了也能读到）
+            const rawText = bubble.textContent || "";
+
+            // 简单的关键词匹配
+            const isAd = keywords.some(key => rawText.includes(key));
+
+            if (isAd) {
+                // 找到了！
+                // 直接隐藏整个 bubble
+                bubble.style.display = 'none';
+
+                // 打个标记，方便调试（可选）
+                bubble.setAttribute('data-ad-removed', 'true');
+                console.log(`[V3毁灭者] 已移除一条广告气泡，包含关键词: ${rawText.substring(0, 15)}...`);
+            }
+
+            // 标记已扫描
+            bubble.setAttribute('data-ad-scanned', 'true');
+        });
+    }
+
+    // 监听 DOM 变化
+    const observer = new MutationObserver((mutations) => {
+        // 每次变动都扫描，Telegram 性能通常扛得住
+        nukeAdBubbles();
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    // 启动延时，确保页面加载
+    setTimeout(nukeAdBubbles, 1000);
+    setTimeout(nukeAdBubbles, 3000); // 再补一刀，防网速慢
+
+})();

@@ -1,0 +1,75 @@
+// ==UserScript==
+// @name         Linux.do 全能助手 (含自动授权)
+// @namespace    http://tampermonkey.net/
+// @version      1.2
+// @description  Linux.do 增强脚本：自动同意 OAuth 授权，并在主站提供基础增强（可扩展）
+// @author       Li Fei
+// @match        https://linux.do/*
+// @match        https://connect.linux.do/*
+// @grant        none
+// @run-at       document-end
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // 获取当前域名，用于判断是在主站还是授权页
+    const host = window.location.host;
+    const href = window.location.href;
+
+    console.log(`[Linux.do Helper] 脚本已在 ${host} 加载`);
+
+    // ==========================================
+    // 模块一：OAuth 自动授权 (connect.linux.do)
+    // ==========================================
+    if (host === 'connect.linux.do' || href.includes('oauth2/authorize')) {
+        console.log("[Linux.do Helper] 检测到 OAuth 授权流程，准备自动处理...");
+
+        // 启动定时器检测按钮，每 300ms 检查一次
+        const authTimer = setInterval(() => {
+            // 定位策略：根据你截图分析得出的最佳选择器
+            // 查找 href 包含 "oauth2/approve" 的链接
+            const allowBtn = document.querySelector('a[href*="oauth2/approve"]');
+
+            if (allowBtn) {
+                // 二次校验：确保按钮文字包含“允许”，防止误点
+                // 使用 includes 兼容可能的空格或图标
+                if (allowBtn.textContent.includes('允许')) {
+                    clearInterval(authTimer); // 找到后立即清除定时器
+
+                    console.log("[Linux.do Helper] 找到允许按钮，点击中...");
+
+                    // 模拟点击
+                    allowBtn.click();
+
+                    // 视觉反馈（可选）：把背景变绿提示已点击
+                    allowBtn.style.backgroundColor = 'green';
+                    allowBtn.textContent = '已自动允许';
+                }
+            }
+        }, 300);
+
+        // 安全兜底：10秒后停止检测，防止页面卡死或结构改变导致死循环
+        setTimeout(() => {
+            clearInterval(authTimer);
+        }, 10000);
+    }
+
+    // ==========================================
+    // 模块二：论坛主站增强 (linux.do)
+    // ==========================================
+    if (host === 'linux.do') {
+        // 这里预留给主站的功能
+        // 你之前如果有“自动已读”或“去广告”的代码，可以贴在这个 if 里面
+
+        console.log("[Linux.do Helper] 主站逻辑就绪");
+
+        // 示例功能：在新标签页打开所有帖子链接（如果你不需要，可以删除下面这几行）
+        /*
+        document.querySelectorAll('a.title').forEach(link => {
+            link.target = '_blank';
+        });
+        */
+    }
+
+})();

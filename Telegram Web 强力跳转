@@ -1,0 +1,81 @@
+// ==UserScript==
+// @name         Telegram Web 强力跳转 (Force Open in Web)
+// @namespace    http://tampermonkey.net/
+// @version      2.1
+// @description  在 t.me 页面强制寻找并点击 "Open in Web" 按钮
+// @author       You
+// @match        *://t.me/*
+// @match        *://telegram.me/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    console.log("【Telegram跳转脚本】已加载，正在寻找目标按钮...");
+
+    // 定义一个最大重试次数，防止无限消耗性能（比如找了30次没找到就停）
+    let retryCount = 0;
+    const maxRetries = 40; // 相当于20秒
+
+    const scanAndClick = setInterval(() => {
+        retryCount++;
+
+        // --- 核心逻辑：寻找按钮 ---
+
+        // 策略1：通过文本内容查找 (最稳，只要人眼能看到 "Open in Web" 就能点到)
+        // 获取页面上所有的 <a> 标签和 <button> 标签
+        const elements = document.querySelectorAll('a, button, div[role="button"]');
+        let targetBtn = null;
+
+        for (let el of elements) {
+            // 忽略隐藏的元素
+            if (el.offsetParent === null) continue;
+
+            const text = el.innerText ? el.innerText.toUpperCase() : "";
+            // 匹配 "OPEN IN WEB" 或者 "VIEW IN WEB"
+            if (text.includes("OPEN IN WEB") || text.includes("VIEW IN WEB")) {
+                targetBtn = el;
+                break;
+            }
+        }
+
+        // 策略2：如果文本没找到，尝试找特定的 Class (作为备选)
+        if (!targetBtn) {
+            targetBtn = document.querySelector('.tgme_action_web_button');
+        }
+
+        // --- 执行点击 ---
+        if (targetBtn) {
+            console.log("【Telegram跳转脚本】找到按钮，点击中...", targetBtn);
+            targetBtn.click();
+
+            // 为了保险，尝试触发原生点击事件
+            // 有些框架屏蔽了 .click() 方法，用 dispatchEvent 更底层
+            try {
+                const event = new MouseEvent('click', {
+                    view: window,
+                    bubbles: true,
+                    cancelable: true
+                });
+                targetBtn.dispatchEvent(event);
+            } catch (e) {
+                console.error(e);
+            }
+
+            // 成功后清除定时器
+            clearInterval(scanAndClick);
+        } else {
+            console.log(`【Telegram跳转脚本】第 ${retryCount} 次扫描未找到按钮...`);
+        }
+
+        // 超时停止
+        if (retryCount >= maxRetries) {
+            clearInterval(scanAndClick);
+            console.log("【Telegram跳转脚本】超时未找到按钮，停止运行。");
+        }
+
+    }, 500); // 每500毫秒检查一次
+
+})();
